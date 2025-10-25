@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clinical Trials Dashboard - Pro</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+body { background-color: #f4f6f8; padding: 20px; font-family: "Segoe UI", sans-serif; }
+.table-responsive { max-height: 400px; overflow-y: auto; margin-top: 15px; }
+.pre-wrap { white-space: pre-wrap; word-wrap: break-word; font-size: 0.85rem; }
+.loading { font-style: italic; color: gray; }
+#map { height: 400px; margin-top: 20px; border-radius: 8px; }
+.status-badge { font-weight: bold; margin-left: 10px; }
+.pagination { margin-top: 15px; }
+</style>
+</head>
+<body>
+<div class="container-fluid">
+    <h1 class="text-center mb-4"><i class="bi bi-hospital"></i> Clinical Trials Dashboard</h1>
+
+    <div class="mb-3 row g-2">
+        <div class="col-md-3">
+            <input type="text" id="filter-condition" class="form-control" placeholder="Filtrer par condition">
+        </div>
+        <div class="col-md-3">
+            <input type="text" id="filter-country" class="form-control" placeholder="Filtrer par pays">
+        </div>
+        <div class="col-md-3">
+            <input type="text" id="filter-status" class="form-control" placeholder="Filtrer par statut">
+        </div>
+        <div class="col-md-3">
+            <button class="btn btn-primary w-100" onclick="loadDashboard(1)">Rechercher</button>
+        </div>
+    </div>
+
+    <div id="dashboard-status" class="loading mb-2">Chargement...</div>
+
+    <div class="row">
+        <div class="col-lg-6 mb-3">
+            <canvas id="statusChart"></canvas>
+        </div>
+        <div class="col-lg-6 mb-3">
+            <canvas id="conditionChart"></canvas>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="accordion mt-4" id="dashboard-accordion"></div>
+
+    <nav>
+        <ul class="pagination justify-content-center" id="pagination"></ul>
+    </nav>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let statusChart, conditionChart, map, mapMarkers = [], trialsData = [], itemsPerPage = 10;
+
+async function fetchJSON(url){
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+}
+
+function createAccordionItem(trial, index){
+    const item = document.createElement("div");
+    item.className = "accordion-item";
+    item.innerHTML = `
+        <h2 class="accordion-header" id="heading-${index}">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${index}">
+                ${trial.Title || "Sans titre"} (${trial.NCTId || "N/A"}) - <span class="status-badge">${trial.Status || "Inconnu"}</span>
+            </button>
+        </h2>
+        <div id="collapse-${index}" class="accordion-collapse collapse" data-bs-parent="#dashboard-accordion">
+            <div class="accordion-body">
+                <p><b>Condition:</b> ${trial.Condition || "N/A"}</p>
+                <p><b>Interventions:</b> ${trial.Interventions || "N/A"}</p>
+                <p><b>Dates:</b> ${trial.StartDate || "N/A"} → ${trial.CompletionDate || "N/A"}</p>
+                <p><b>Locations:</b> ${trial.Locations || "N/A"}</p>
+                <div id="details-${index}" class="pre-wrap">Chargement des détails...</div>
+                <button class="btn btn-sm btn-outline-secondary mt-2" onclick="loadTrialFullDetails('${trial.NCTId}', ${index})">
+                    Voir détails complets
+                </button>
+            </div>
+        </div>
+    `;
+    return item;
+}
+
+async function loadTrialFullDetails(nctId, index){
+    const detailsDiv = document.getElementById(`details-${index}`);
+    detailsDiv.textContent = "Chargement...";
+    try{
+        const [details, arms, locs, sponsors] = await Promise.all([
+            fetchJSON(`/api/trial/${nctId}`),
+            fetchJSON(`/api/trial/${nctId}/arms`),
+            fetchJSON(`/api/trial/${nctId}/locations`),
+            fetchJSON(`/api/trial/${nctId}/sponsors`)
+        ]);
+        detailsDiv.textContent = JSON.stringify({
+            details: details?.data || {},
+            arms: arms?.data || [],
+            locations: locs?.data || [],
+            sponsors: sponsors?.data || []
+        }, null, 2);
+    }catch(e){
+        detailsDiv.textContent = `Erreur: ${e.message}`;
+    }
+}
+
+function renderPagination(totalItems, currentPage){
+    const pagination = document.getElementById("pagination");
+    pagination.innerHTML = "";
+    const totalPages = Math.ceil(totalItems / itemsPerPage);
+    for(let i=1;i<=totalPages;i++){
+        const li = document.createElement("li");
+        li.className = `page-item ${i===currentPage?'active':''}`;
+        li.innerHTML = `<button class="page-link" onclick="loadDashboard(${i})">${i}</button>`;
+        pagination.appendChild(li);
+    }
+}
+
+function renderPage(page){
+    const start = (page-1)*itemsPerPage;
+    const end = start+itemsPerPage;
+    const currentData = trialsData.slice(start,end);
+
+    const accordion = document.getElementById("dashboard-accordion");
+    accordion.innerHTML = "";
+    currentData.forEach((trial,i)=>accordion.appendChild(createAccordionItem(trial,start+i)));
+}
+
+async function loadDashboard(page=1){
+    const statusDiv = document.getElementById("dashboard-status");
+    statusDiv.textContent = "Chargement...";
+    const condFilter = document.getElementById("filter-condition").value.trim();
+    const countryFilter = document.getElementById("filter-country").value.trim();
+    const statusFilter = document.getElementById("filter-status").value.trim();
+
+    try{
+        const queryParams = new URLSearchParams();
+        if(condFilter) queryParams.append("condition", condFilter);
+        if(countryFilter) queryParams.append("country", countryFilter);
+        if(statusFilter) queryParams.append("status", statusFilter);
+        queryParams.append("limit", 100);
+        const data = await fetchJSON(`/api/inventory?${queryParams.toString()}`);
+
+        trialsData = data.data.map(trial=>(({
+            NCTId: trial.nct_id || "",
+            Title: trial.title || "Sans titre",
+            Condition: Array.isArray(trial.conditions)? trial.conditions.join(", ") : trial.conditions || "",
+            Interventions: Array.isArray(trial.interventions)? trial.interventions.join(", ") : trial.interventions || "",
+            Status: trial.status || "",
+            StartDate: trial.start_date || "",
+            CompletionDate: trial.completion_date || "",
+            Locations: Array.isArray(trial.locations)? trial.locations.map(l=>l.city + ", " + l.country).join("; ") : "",
+            City: trial.locations?.[0]?.city || "",
+            Country: trial.locations?.[0]?.country || ""
+        })));
+
+        renderPage(page);
+        renderPagination(trialsData.length, page);
+        statusDiv.textContent = `✅ Chargé ${trialsData.length} essais`;
+
+        // Graphiques
+        const statusCounts = {}, conditionCounts = {};
+        trialsData.forEach(t=>{
+            statusCounts[t.Status]=(statusCounts[t.Status]||0)+1;
+            t.Condition.split(", ").forEach(c=>conditionCounts[c]=(conditionCounts[c]||0)+1);
+        });
+
+        if(statusChart) statusChart.destroy();
+        const ctx1 = document.getElementById('statusChart').getContext('2d');
+        statusChart = new Chart(ctx1,{
+            type:'pie',
+            data:{
+                labels:Object.keys(statusCounts),
+                datasets:[{data:Object.values(statusCounts), backgroundColor:['#36A2EB','#FF6384','#FFCE56','#4BC0C0','#9966FF']}]
+            }
+        });
+
+        if(conditionChart) conditionChart.destroy();
+        const ctx2 = document.getElementById('conditionChart').getContext('2d');
+        conditionChart = new Chart(ctx2,{
+            type:'bar',
+            data:{
+                labels:Object.keys(conditionCounts),
+                datasets:[{label:'Nombre d\'essais', data:Object.values(conditionCounts), backgroundColor:'#36A2EB'}]
+            },
+            options:{indexAxis:'y'}
+        });
+
+        // Carte
+        if(!map){
+            map = L.map('map').setView([20,0],2);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap'}).addTo(map);
+        }
+        mapMarkers.forEach(m=>map.removeLayer(m));
+        mapMarkers = [];
+
+        for(const t of trialsData){
+            if(t.City && t.Country && mapMarkers.length < 50){
+                const query = encodeURIComponent(`${t.City}, ${t.Country}`);
+                try{
+                    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`);
+                    const loc = await res.json();
+                    if(loc && loc[0]){
+                        const marker = L.marker([loc[0].lat, loc[0].lon])
+                            .bindPopup(`<b>${t.Title}</b><br>${t.City}, ${t.Country}<br>Status: ${t.Status}`);
+                        marker.addTo(map);
+                        mapMarkers.push(marker);
+                    }
+                }catch(err){ console.warn(`Erreur géocodage: ${err}`); }
+            }
+        }
+
+    }catch(e){
+        statusDiv.textContent = `❌ Erreur: ${e.message}`;
+    }
+}
+
+// Charger au lancement
+loadDashboard();
+</script>
+</body>
+</html>
