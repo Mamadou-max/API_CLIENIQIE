@@ -6,7 +6,7 @@ import secrets
 class Settings(BaseSettings):
     #  URL de base de l'API ClinicalTrials.gov
     CT_GOV_BASE_URL: str = Field(
-        default="https://clinicaltrials.gov/api/query",
+        default="https://clinicaltrials.gov/api/v2/studes",
         description="Base URL pour ClinicalTrials.gov API"
     )
 
